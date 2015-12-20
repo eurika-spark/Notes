@@ -1,0 +1,622 @@
+
+http://tashan10.com/yong-dockerda-jian-hadoopwei-fen-bu-shi-ji-qun
+首页文章分类 关于
+使用Docker在本地搭建Hadoop分布式集群
+FEBRUARY 28, 2015
+Java | Docker | Hadoop
+学习Hadoop集群环境搭建是Hadoop入门必经之路。搭建分布式集群通常有两个办法：
+
+要么找多台机器来部署（常常找不到机器）
+或者在本地开多个虚拟机（开销很大，对宿主机器性能要求高，光是安装多个虚拟机系统就得搞半天……）。
+那么，问题来了！
+
+有没有更有可行性的办法？
+提到虚拟化，Docker最近很是火热！不妨拿来在本地做虚拟化，搭建Hadoop的伪分布式集群环境。虽然有点大材小用，但是学习学习，练练手也是极好的。
+
+文章比较长，建议先倒杯水，听我慢慢到来……
+
+先说一下我的思路吧：
+
+先使用Docker构建一个Hadoop运行环境的镜像
+然后使用这个镜像分别启动3个容器：1个Master节点，两个Slave节点
+在Master节点上配置Slave节点信息
+在Master上启动Hadoop
+使用Docker搭建Hadoop环境
+什么是 Docker？
+Docker 是一个开源项目，诞生于 2013 年初，最初是 dotCloud 公司内部的一个业余项目。它基于 Google 公司推出的 Go 语言实现。 项目后来加入了 Linux 基金会，遵从了 Apache 2.0 协议，项目代码在 GitHub 上进行维护。
+
+Docker 自开源后受到广泛的关注和讨论，以至于 dotCloud 公司后来都改名为 Docker Inc。Redhat 已经在其 RHEL6.5 中集中支持 Docker；Google 也在其 PaaS 产品中广泛应用。
+
+Docker 项目的目标是实现轻量级的操作系统虚拟化解决方案。 Docker 的基础是 Linux 容器（LXC）等技术。
+
+在 LXC 的基础上 Docker 进行了进一步的封装，让用户不需要去关心容器的管理，使得操作更为简便。用户操作 Docker 的容器就像操作一个快速轻量级的虚拟机一样简单。
+
+Docker安装
+我使用的是Ubuntu14.04，命令如下：
+
+$ sudo apt-get install apt-transport-https
+$ sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 36A1D7869245C8950F966E92D8576A8BA88D21E9
+$ sudo bash -c "echo deb https://get.docker.io/ubuntu docker main > /etc/apt/sources.list.d/docker.list"
+$ sudo apt-get update
+$ sudo apt-get install lxc-docker
+其余系统或其他版本，请参考这里。
+
+Docker常用命令介绍
+docker images：列出所有镜像(images)
+docker ps：列出正在运行的(容器)containers
+docker pull ubuntu：下载镜像
+docker run -i -t ubuntu /bin/bash：运行ubuntu镜像
+docker commit 3a09b2588478 ubuntu:mynewimage：提交你的变更，并且把容器保存成Tag为mynewimage的新的ubuntu镜像.(注意，这里提交只是提交到本地仓库，类似git)
+其他常用命令，参考这里。
+
+Docker去sudo
+在Ubuntu下，在执行Docker时，每次都要输入sudo，同时输入密码，这里把当前用户执行权限添加到相应的docker用户组里面。
+
+# 添加一个新的docker用户组
+sudo groupadd docker
+# 添加当前用户到docker用户组里，注意这里的king为ubuntu登录用户名
+sudo gpasswd -a king docker
+# 重启Docker后台监护进程
+sudo service docker restart
+# 重启之后，尝试一下，是否生效
+docker version
+#若还未生效，则系统重启，则生效
+sudo reboot
+下载Ubuntu镜像
+docker pull ubuntu:14.04
+这条命令的作用是从Docker仓库中获取ubuntu的镜像，参考这里。
+
+下载完成以后，使用docker images，可以列出所有本地的镜像：
+
+king@king:~$ docker images 
+REPOSITORY                      TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
+ubuntu                          14.04               5ba9dab47459        4 weeks ago         188.3 MB
+ubuntu                          14.04.1             5ba9dab47459        4 weeks ago         188.3 MB
+ubuntu                          latest              5ba9dab47459        4 weeks ago         188.3 MB
+ubuntu                          trusty              5ba9dab47459        4 weeks ago         188.3 MB
+启动第一个容器
+下面，我们准备以ubuntu镜像作为基准镜像，构建我们的Hadoop运行环境镜像。
+
+先使用命令如下命令启动容器：
+
+docker run -ti ubuntu
+注意：我们在不指定Tag的情况下，默认选择Tag为latest的镜像启动容器。 指定Tag启动命令为：
+
+docker run -ti ubuntu:14.04
+另外，每次容器启动的时候需要指定一个命令，容器启动后便会执行这个命令。例如执行下面的命令：
+
+king@king:~$ docker run ubuntu /bin/echo 'Hello world'
+Hello world
+king@king:~$  
+可以看到，容器启动了马上又退出了，因为容器之做了一件事情：就是打印Hello world，打印完了，自然就退出了。
+
+如果你想做多件事情，可以自己写一个shell脚本，把你要的操作写入进去，然后在run后面指定这个脚本路径。
+
+我们刚刚的docker run -ti ubuntu命令中没有指定执行程序，Docker默认执行/bin/bash。
+
+其他启动参数，大家可以自己在网上查，这里不再陈述了。好了我们回到刚刚docker run -ti ubuntu启动的容器，可以看到容器几乎瞬间就启动起来了，比虚拟机不知快了多少倍！！
+
+king@king:~$ docker run -ti ubuntu
+root@009fe5728aba:/# 
+容器启动起来了，接下来就是安装Java、Hadoop及相关配置了。
+
+Java安装
+依次执行如下命令：
+
+sudo apt-get install software-properties-common python-software-properties
+sudo add-apt-repository ppa:webupd8team/java
+sodu apt-get update
+apt-get install oracle-java7-installer
+java -version
+注意：
+
+这里安装的Java7（JDK1.7），如需其他版本请自行修改apt-get install oracle-java7-installer为apt-get install oracle-java6-installer
+默认使用的是Ubuntu的官方源，如果下载比较慢，请自行修改更新源，不知道如何使用命令行修改的，参考这里。
+另外，大家可以将装好java的镜像保存为一个副本，他日可以在此基础上构建其他镜像。命令如下：
+
+root@122a2cecdd14:~# exit
+docker commit -m "java install" 122a2cecdd14 ubuntu:java
+上面命令中122a2cecdd14为当前容器的ID, ubuntu:java是为新的镜像指定一个标识，ubuntu为仓库名，java是Tag。
+
+如何获取容器ID：
+
+有个简便的办法找到此ID，就是命令行用户名@后面的那一串字符。这个方法只在容器启动时没有指定hostname时才能用。
+使用docker ps列出所有运行的容器，在命令结果中查看
+Hadoop安装
+渐渐切入正题了O(∩_∩)O~
+
+使用刚刚已经安装了Java的容器镜像启动：
+
+docker run -ti ubuntu:java
+启动成功了，我们开始安装Hadoop。这里，我们直接使用wget下载安装文件。
+
+1.先安装wget：
+sudo apt-get install -y wget
+2.下载并解压安装文件：
+root@8ef06706f88d:cd ~
+root@8ef06706f88d:~# mkdir soft
+root@8ef06706f88d:~# cd soft/
+root@8ef06706f88d:~/soft# mkdir apache
+root@8ef06706f88d:~/soft# cd apache/
+root@8ef06706f88d:~/soft/apache# mkdir hadoop
+root@8ef06706f88d:~/soft/apache# cd hadoop/
+root@8ef06706f88d:~/soft/apache/hadoop# wget http://mirrors.sonic.net/apache/hadoop/common/hadoop-2.6.0/hadoop-2.6.0.tar.gz
+root@8ef06706f88d:~/soft/apache/hadoop# tar xvzf hadoop-2.6.0.tar.gz
+注意：这里我们安装的Hadoop版本是2.6.0，如果需要其他版本，请在这里找到链接地址后修改命令即可。
+
+3.配置环境变量
+修改~/.bashrc文件。在文件末尾加入下面配置信息：
+
+export JAVA_HOME=/usr/lib/jvm/java-7-oracle
+export HADOOP_HOME=/root/soft/apache/hadoop/hadoop-2.6.0
+export HADOOP_CONFIG_HOME=$HADOOP_HOME/etc/hadoop
+export PATH=$PATH:$HADOOP_HOME/bin
+export PATH=$PATH:$HADOOP_HOME/sbin
+注意：我们使用apt-get安装java，不知道java装在什么地方的话可以使用下面的命令查看：
+
+root@8ef06706f88d:~# update-alternatives --config java
+There is only one alternative in link group java (providing /usr/bin/java): /usr/lib/jvm/java-7-oracle/jre/bin/java
+Nothing to configure.
+root@8ef06706f88d:~#   
+4.配置Hadoop
+下面，我们开始修改Hadoop的配置文件。主要配置core-site.xml、hdfs-site.xml、mapred-site.xml这三个文件。
+
+开始配置之前，执行下面命令：
+
+root@8ef06706f88d:~# cd $HADOOP_HOME/
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0# mkdir tmp
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0# cd tmp/
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/tmp# pwd
+/root/soft/apache/hadoop/hadoop-2.6.0/tmp
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/tmp# cd ../
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0# mkdir namenode
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0# cd namenode/
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/namenode# pwd
+/root/soft/apache/hadoop/hadoop-2.6.0/namenode
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/namenode# cd ../
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0# mkdir datanode
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0# cd datanode/
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/datanode# pwd
+/root/soft/apache/hadoop/hadoop-2.6.0/datanode
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/datanode# cd $HADOOP_CONFIG_HOME/
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# cp mapred-site.xml.template mapred-site.xml
+root@8ef06706f88d:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# nano hdfs-site.xml
+这里创建了三个目录，后续配置的时候会用到：
+
+tmp：作为Hadoop的临时目录
+namenode：作为NameNode的存放目录
+datanode：作为DataNode的存放目录
+1).core-site.xml配置
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+<!-- Put site-specific property overrides in this file. -->
+
+<configuration>
+    <property>
+            <name>hadoop.tmp.dir</name>
+            <value>/root/soft/apache/hadoop/hadoop-2.6.0/tmp</value>
+            <description>A base for other temporary directories.</description>
+    </property>
+
+    <property>
+            <name>fs.default.name</name>
+            <value>hdfs://master:9000</value>
+            <final>true</final>
+            <description>The name of the default file system.  A URI whose
+            scheme and authority determine the FileSystem implementation.  The
+            uri's scheme determines the config property (fs.SCHEME.impl) naming
+            the FileSystem implementation class.  The uri's authority is used to
+            determine the host, port, etc. for a filesystem.</description>
+    </property>
+</configuration>
+注意：
+
+hadoop.tmp.dir配置项值即为此前命令中创建的临时目录路径。
+fs.default.name配置为hdfs://master:9000，指向的是一个Master节点的主机（后续我们做集群配置的时候，自然会配置这个节点，先写在这里）
+2).hdfs-site.xml配置
+使用命令nano hdfs-site.xml编辑hdfs-site.xml文件：
+
+ <?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+<!-- Put site-specific property overrides in this file. -->
+
+<configuration>
+    <property>
+        <name>dfs.replication</name>
+        <value>2</value>
+        <final>true</final>
+        <description>Default block replication.
+        The actual number of replications can be specified when the file is created.
+        The default is used if replication is not specified in create time.
+        </description>
+    </property>
+
+    <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>/root/soft/apache/hadoop/hadoop-2.6.0/namenode</value>
+        <final>true</final>
+    </property>
+
+    <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>/root/soft/apache/hadoop/hadoop-2.6.0/datanode</value>
+        <final>true</final>
+    </property>
+</configuration>
+注意：
+
+我们后续搭建集群环境时，将配置一个Master节点和两个Slave节点。所以dfs.replication配置为2。
+dfs.namenode.name.dir和dfs.datanode.data.dir分别配置为之前创建的NameNode和DataNode的目录路径
+3).mapred-site.xml配置
+Hadoop安装文件中提供了一个mapred-site.xml.template，所以我们之前使用了命令cp mapred-site.xml.template mapred-site.xml，创建了一个mapred-site.xml文件。下面使用命令nano mapred-site.xml编辑这个文件：
+
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+<!-- Put site-specific property overrides in this file. -->
+
+<configuration>
+    <property>
+        <name>mapred.job.tracker</name>
+        <value>master:9001</value>
+        <description>The host and port that the MapReduce job tracker runs
+        at.  If "local", then jobs are run in-process as a single map
+        and reduce task.
+        </description>
+    </property>
+</configuration>
+这里只有一个配置项mapred.job.tracker，我们指向master节点机器。
+
+4)修改JAVA_HOME环境变量
+使用命令.nano hadoop-env.sh，修改如下配置：
+
+# The java implementation to use.
+export JAVA_HOME=/usr/lib/jvm/java-7-oracle
+5.格式化 namenode
+这是很重要的一步，执行命令hadoop namenode -format
+
+4.安装SSH
+搭建集群环境，自然少不了使用SSH。这可以实现无密码访问，访问集群机器的时候很方便。
+
+root@8ef06706f88d:~# sudo apt-get install ssh
+SSH装好了以后，由于我们是Docker容器中运行，所以SSH服务不会自动启动。需要我们在容器启动以后，手动通过/usr/sbin/sshd 手动打开SSH服务。未免有些麻烦，为了方便，我们把这个命令加入到~/.bashrc文件中。通过nano ~/.bashrc编辑.bashrc文件（nano没有安装的自行安装，也可用vi），在文件后追加下面内容：
+
+#autorun
+/usr/sbin/sshd
+5.生成访问密钥
+root@8ef06706f88d:/# cd ~/
+root@8ef06706f88d:~# ssh-keygen -t rsa -P '' -f ~/.ssh/id_dsa
+root@8ef06706f88d:~# cd .ssh
+root@8ef06706f88d:~/.ssh# cat id_dsa.pub >> authorized_keys
+注意： 这里，我的思路是直接将密钥生成后写入镜像，免得在买个容器里面再单独生成一次，还要相互拷贝公钥，比较麻烦。当然这只是学习使用，实际操作时，应该不会这么搞，因为这样所有容器的密钥都是一样的！！
+
+6.保存镜像副本
+这里我们将安装好Hadoop的镜像保存为一个副本。
+
+root@8ef06706f88d:~# exit
+king@king:~$ docker commit -m "hadoop install" 8ef06706f88d ubuntu:hadoop
+Hadoop分布式集群搭建
+重点来了！
+
+按照 hadoop 集群的基本要求,其 中一个是 master 结点,主要是用于运行 hadoop 程序中的 namenode、secondorynamenode 和 jobtracker（新版本名字变了） 任务。用外两个结点均为 slave 结点,其中一个是用于冗余目的,如果没有冗 余,就不能称之为 hadoop 了,所以模拟 hadoop 集群至少要有 3 个结点。
+
+前面已经将Hadoop的镜像构建好了，下面就是使用这个镜像搭建Master节点和Slave节点了：
+
+节点	hostname	ip	用途	Docker启动脚本
+Master	master	10.0.0.5	
+namenode
+
+secondaryNamenode
+
+jobTracker
+
+docker run -ti -h master ubuntu:hadoop
+Slave	slave1	10.0.0.6	
+datanode
+
+taskTracker
+
+docker run -ti -h slave1 ubuntu:hadoop
+Slave	slave2	10.0.0.7	
+datanode
+
+taskTracker
+
+docker run -ti -h slave2 ubuntu:hadoop
+启动Docker容器
+回顾一下，Docker启动容器使用的是run命令：
+
+docker run -ti ubuntu:hadoop
+这里有几个问题：
+
+Docker容器中的ip地址是启动之后自动分配的，且不能手动更改
+hostname、hosts配置在容器内修改了，只能在本次容器生命周期内有效。如果容器退出了，重新启动，这两个配置将被还原。且这两个配置无法通过commit命令写入镜像
+我们搭建集群环境的时候，需要指定节点的hostname，以及配置hosts。hostname可以使用Docker run命令的h参数直接指定。但hosts解析有点麻烦，虽然可以使用run的--link参数配置hosts解析信息，但我们搭建集群时要求两台机器互相能够ping通，其中一个容器没有启动，那么ip不知道，所以--link参数对于我们的这个场景不实用。要解决这个问题，大概需要专门搭建一个域名解析服务，即使用--dns参数（参考这里）。
+
+我们这里只为学习，就不整那么复杂了，就手动修改hosts吧。只不过每次都得改，我Docker知识浅薄，一时还没有解决这个问题。相信肯定有更好的办法。如果有高人能指定一下，感激不尽！！
+
+启动master容器
+docker run -ti -h master ubuntu:hadoop
+启动slave1容器
+docker run -ti -h slave1 ubuntu:hadoop
+启动slave2容器
+docker run -ti -h slave2 ubuntu:hadoop
+配置hosts
+通过ifconfig命令获取各节点ip。环境不同获取的ip可能不一样，例如我本机获取的ip如下： 
+master:10.0.0.5
+slave1:10.0.0.6
+slave2:10.0.0.7
+使用sudo nano /etc/hosts命令将如下配置写入各节点的hosts文件，注意修改ip地址：
+
+10.0.0.5        master
+10.0.0.6        slave1
+10.0.0.7        slave2
+配置slaves
+下面我们来配置哪些节点是slave。在较老的Hadoop版本中有一个masters文件和一个slaves文件，但新版本中只有slaves文件了。
+
+在master节点容器中执行如下命令：
+
+root@master:~# cd $HADOOP_CONFIG_HOME/
+root@master:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# nano slaves 
+将如下slave节点的hostname信息写入该文件：
+
+slave1
+slave2
+启动Hadoop
+在master节点上执行start-all.sh命令，启动Hadoop。
+
+激动人心的一刻……
+
+佛祖保佑，永无bug
+
+如果看到如下信息，则说明启动成功了：
+
+root@master:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# start-all.sh 
+This script is Deprecated. Instead use start-dfs.sh and start-yarn.sh
+Starting namenodes on [master]
+master: starting namenode, logging to /root/soft/apache/hadoop/hadoop-2.6.0/logs/hadoop-root-namenode-master.out
+slave1: starting datanode, logging to /root/soft/apache/hadoop/hadoop-2.6.0/logs/hadoop-root-datanode-slave1.out
+slave2: starting datanode, logging to /root/soft/apache/hadoop/hadoop-2.6.0/logs/hadoop-root-datanode-slave2.out
+Starting secondary namenodes [0.0.0.0]
+0.0.0.0: starting secondarynamenode, logging to /root/soft/apache/hadoop/hadoop-2.6.0/logs/hadoop-root-secondarynamenode-master.out
+starting yarn daemons
+starting resourcemanager, logging to /root/soft/apache/hadoop/hadoop-2.6.0/logs/yarn--resourcemanager-master.out
+slave1: starting nodemanager, logging to /root/soft/apache/hadoop/hadoop-2.6.0/logs/yarn-root-nodemanager-slave1.out
+slave2: starting nodemanager, logging to /root/soft/apache/hadoop/hadoop-2.6.0/logs/yarn-root-nodemanager-slave2.out
+在个节点上执行jps命令，结果如下：
+
+master节点
+root@master:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# jps
+1223 Jps
+992 SecondaryNameNode
+813 NameNode
+1140 ResourceManager
+slave1节点
+root@slave1:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# jps
+258 NodeManager
+352 Jps
+159 DataNode
+slave2节点
+root@slave2:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# jps
+371 Jps
+277 NodeManager
+178 DataNode
+下面，我们在master节点上通过命令hdfs dfsadmin -report查看DataNode是否正常启动：
+
+root@master:~/soft/apache/hadoop/hadoop-2.6.0/etc/hadoop# hdfs dfsadmin -report
+Configured Capacity: 167782006784 (156.26 GB)
+Present Capacity: 58979344384 (54.93 GB)
+DFS Remaining: 58979295232 (54.93 GB)
+DFS Used: 49152 (48 KB)
+DFS Used%: 0.00%
+Under replicated blocks: 0
+Blocks with corrupt replicas: 0
+Missing blocks: 0
+
+-------------------------------------------------
+Live datanodes (2):
+
+Name: 10.0.0.7:50010 (slave2)
+Hostname: slave2
+Decommission Status : Normal
+Configured Capacity: 83891003392 (78.13 GB)
+DFS Used: 24576 (24 KB)
+Non DFS Used: 54401331200 (50.67 GB)
+DFS Remaining: 29489647616 (27.46 GB)
+DFS Used%: 0.00%
+DFS Remaining%: 35.15%
+Configured Cache Capacity: 0 (0 B)
+Cache Used: 0 (0 B)
+Cache Remaining: 0 (0 B)
+Cache Used%: 100.00%
+Cache Remaining%: 0.00%
+Xceivers: 1
+Last contact: Sat Feb 28 07:27:05 UTC 2015
+
+
+Name: 10.0.0.6:50010 (slave1)
+Hostname: slave1
+Decommission Status : Normal
+Configured Capacity: 83891003392 (78.13 GB)
+DFS Used: 24576 (24 KB)
+Non DFS Used: 54401331200 (50.67 GB)
+DFS Remaining: 29489647616 (27.46 GB)
+DFS Used%: 0.00%
+DFS Remaining%: 35.15%
+Configured Cache Capacity: 0 (0 B)
+Cache Used: 0 (0 B)
+Cache Remaining: 0 (0 B)
+Cache Used%: 100.00%
+Cache Remaining%: 0.00%
+Xceivers: 1
+Last contact: Sat Feb 28 07:27:05 UTC 2015
+还可以通过Web页面看到查看DataNode和NameNode的状态:http://10.0.0.5:50070/ (由于我宿主机器上没有配置master的hosts解析，所以只能用ip地址访问，大家将ip改为各自的master节点容器的ip即可)：
+
+Hadoop Web管理截面
+
+执行WordCount实例
+（待续……）
+
+分享一下
+
+㐲   㐳 㐶
+暮成雪
+暮成雪
+最新最早最热
+22条评论 1条新浪微博
+blueden
+blueden
+暮成雪君你好，在 ifconfig 那一步得不到容器的 ip 地址是什么问题呢？不是启动容器后会自动分配的吗？谢谢
+3月8日回复顶转发
+blueden
+blueden
+回复 blueden: 对不起我犯蠢了……在宿主机上执行 ifconfig ……
+3月8日回复顶转发
+cqyugang
+cqyugang
+暮成雪你好，我按照你写的教程操作完成了环境搭建，存在以下问题：我在win7上安装的docker，启动docker其ip为192.168.56.101，从windows上可以ping通该地址，也可以使用xshell连接上；但启动docker容器（master、slave1和slave2）后其ip均为172.17.0.x网段的地址，该网段地址从本地windows访问不通，访问http://172.17.0.2:50070/ 显示为无法访问。请帮忙指导我应该如何配置才能从本地Windows访问到docker容器，谢谢！
+3月13日回复顶转发
+俺是种田田的
+俺是种田田的
+回复 cqyugang: 不好意思，这几天比较忙。你QQ多少？我加你。帮你看看。
+建议你最好还是在Linux环境下搞这一套环境，Windows环境下往往就会出现一些莫名其妙的问题。
+3月17日回复顶转发
+cqyugang
+cqyugang
+回复 俺是种田田的: 非常感谢你的帮忙，这几天在外出差没有上网，我从docker文档上了解到要进行端口映射，访问的问题已经解决。我的QQ号是519145010，麻烦有时间加一下，有问题可以及时请教你，谢谢！
+3月24日回复顶转发
+Ra
+Ra
+问下博主ssh登录直接闪退，最后只启动起来ResourceManager这个是什么问题？
+4月29日回复顶转发
+俺是种田田的
+俺是种田田的
+回复 Ra: 你注意看看ssh登录的时候控制台有没有什么错误？
+5月4日回复顶转发
+Ra
+Ra
+回复 俺是种田田的: 已经解决了，ssh -v看了下错误信息发现时254错误修改配置文件就OK了- -感谢博主
+5月4日回复顶转发
+handsome
+handsome
+文章写得不错，按照步骤来一次部署成功，楼主辛苦了！针对hosts不能持久化的问题，我的解决办法是把宿主的hosts映射到容器的hosts中，这样不用每次进入容器中修改hosts。当然这个方法也不完美。。。
+6月19日回复顶转发
+宋智洋
+宋智洋
+感谢作者这么详细的介绍， 我都已经配置成功， 但是唯独WEB页面那个部分无法打开， 我docker做了端口映射 本机:容器 50070:50070 但是在本机的web就是无法显示 T_T
+6月20日回复顶转发
+li
+li
+请问 ssh 登录后闪退 的解决方案是怎么修改配置文件的啊？
+7月6日回复顶转发
+jiangcoder
+jiangcoder
+使用sudo nano /etc/hosts命令将如下配置写入各节点的hosts文件,这一步没有通过，提示
+E45: 'readonly' option is set (add ! to override)
+7月7日回复顶转发
+Docker_hadoop
+Docker_hadoop
+前辈，你好，我想请问一下，你现在已经解决hosts的问题了吗？
+7月13日回复顶转发
+王大勇
+王大勇
+本套手册非常棒，我完全在Windows7下面配置，补充一下我安装过程中的经验
+1. 问题 ：slave1: Host key verification failed， ssh/config（或者/etc/ssh/ssh_config）中配置
+StrictHostKeyChecking no
+UserKnownHostsFile /dev/null
+2. 这个问题是所有人做头疼问题，容器都启动起来了，宿主Windows上浏览器访问不了，你说气人不？
+解决办法，启动Master容器用这个命令
+docker run -ti -d -p <192.168.59.103/*改成你的宿主ip*/>:50070:50070 -h master <ubuntu:hadoop3/*改成你的镜像*/>
+docker attach <刚才启动的那个容器id，可以用docker ps查看到id>
+9月1日回复顶转发
+Kaileyyyyyy
+Kaileyyyyyy
+楼上的不能更改hosts文件应该是docker版本问题，我把它更新之后就可以更改了也是困扰了好久。
+10月25日回复顶转发
+袁羿
+袁羿
+不错，很好
+10月31日回复顶转发
+KDF5000
+KDF5000
+楼主,为什么按照你的方法,安装完java后,执行exit,然后到宿主机上执行docker ps的时候没有任何container?
+11月11日回复顶转发
+奋斗小青年
+奋斗小青年
+博主，你好，我是在两个容器中各生成一个秘钥，请问怎么相互拷贝呢？麻烦帮助一下，
+11月12日回复顶转发
+岑凯伦
+岑凯伦
+你好，我做了端口映射，可是还是无法查看集群状态，请问怎么办呢
+11月13日回复顶转发
+妹子内涵社区
+妹子内涵社区
+好久没来了，过来转转
+12月1日回复顶转发
+苍老师姐姐
+苍老师姐姐
+很精典,谢谢! 难得的好贴
+12月2日回复顶转发
+真红
+真红
+PO主好，请问centOS7在执行到start-all.sh提示
+slave2: ssh: connect to host slave2 port 22: Connection refused
+slave1: ssh: connect to host slave1 port 22: Connection refused
+是什么原因
+slave1 slave2 master三台主机均已安装ssh
+12月11日回复顶转发
+社交帐号登录:
+微信
+微博
+QQ
+人人
+更多»
+
+
+发布
+他山石正在使用多说
+他山石 © 2015 • ALL RIGHTS RESERVED.
+PROUDLY PUBLISHED WITH GHOST
+蜀ICP备15005042号-1
+站长统计
